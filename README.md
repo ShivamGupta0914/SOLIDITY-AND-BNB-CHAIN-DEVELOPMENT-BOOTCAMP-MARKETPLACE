@@ -1,14 +1,20 @@
-# Sample Hardhat Project
+# Stake And Earn
+This Repo contains contracts which provides functionality for users to stake their assets and earn reward.
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a script that deploys that contract.
+## Staking
+Users can easily approve the contract ```StakingContract``` which will pull users asset into the contract using **stake** function.
 
-Try running some of the following tasks:
+## Withdraw
+Users can anytime come and call **withdraw** function to get their assets back and earn the extra rewards.
 
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat run scripts/deploy.js
-```
- 
+# Rewards(Airdrop)
+
+Users will have to go to ```Airdrop``` contract to claim their reward which will use merkle proof to check for valid users.
+
+## Installation :-
+*   Step 1: Run ```npm install```
+*   Step 2: Run ```npx hardhat compile``` to compile contracts
+*   Step 3: Run ```npx hardhat test``` to test the contracts
+
+To deploy, take a look at .env.example file for private keys and all.
+and run ```npx hardhat deploy --tags``` to deploy.
