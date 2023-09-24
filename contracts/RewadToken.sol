@@ -8,7 +8,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 @dev This contract implements a staking token that extends the ERC20 token standard and inherits from the Ownable contract provided by OpenZeppelin.
 */
 contract RewardToken is ERC20, Ownable {
-    constructor(uint256 amount) ERC20("RewardToken", "MTK") {
-         _mint(msg.sender, amount);
-    }
+  constructor(uint256 amount) ERC20("RewardToken", "MTK") {
+    _mint(msg.sender, amount);
+  }
 }
