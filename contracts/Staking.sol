@@ -1,123 +1,229 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/structs/EnumerableSetUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 
-contract Staking is
-  Initializable,
-  Ownable2StepUpgradeable,
-  AccessControlUpgradeable
-{
-  bytes32 constant DEFAULT_ROLE = keccak256("DEFAULT_ROLE");
+/**
+@title Staking Contract
+@author Shivam Singh
+@dev A contract that allows users to stake ERC20 tokens for a set duration of time and earn rewards in return.
+@dev This contract uses OpenZeppelin's AccessControlUpgradeable, EnumerableSetUpgradeable, IERC20Upgradeable and OwnableUpgradeable contracts.
+@notice Staking can only be done during the specified time duration and with whitelisted tokens.
+*/
+contract StakingContract is AccessControlUpgradeable, Ownable2StepUpgradeable {
+    using EnumerableSetUpgradeable for EnumerableSetUpgradeable.AddressSet;
+    uint256 public constant REWARD = 1; // 1 reward token per 5 blocks
 
-  using EnumerableSetUpgradeable for EnumerableSetUpgradeable.AddressSet;
-  struct StakerDetail {
-    uint256 blockNumber;
-    address ERC20Contract;
-  }
+    //Timestamps for the start and end of the staking period.
+    uint256 public startTimestamp; 
+    uint256 public endTimestamp;
 
-  uint256 public start;
-  uint256 public end;
-  uint256 updatedBlockNumber;
+    //The block number at the end of the staking period.
+    uint256 public blockAtEndTimestamp;
 
-  mapping(address => uint256) reward;
-  mapping(address => uint256) balance;
-  mapping(address => StakerDetail) staker;
+    //Address of the reward token contract
+    address public rewardTokenContract;
 
-  EnumerableSetUpgradeable.AddressSet private _whitList;
+    //Flag to track if the block number at the end of the staking period has been updated
+    bool private flag;
 
-  /// @dev To check msg.sender able to stake or not
-  modifier checkStakeTime() {
-    require(start != 0, "stake has not started");
-    require(block.timestamp <= end, "stake time has ended");
-    _;
-  }
-  /// @notice To check caller is owner
-  modifier checkOwner() {
-    require(hasRole(DEFAULT_ROLE, msg.sender), "Caller is not a owner");
-    _;
-  }
+    //A set of token addresses that are allowed for staking.
+    EnumerableSetUpgradeable.AddressSet private _whitelistedToken;
+    EnumerableSetUpgradeable.AddressSet private _whitelistedUsers; 
 
-  /// @notice initialize state once
-  /// @dev it initializes contract owner and setupRole
-  function initialize() external initializer {
-    _setupRole(DEFAULT_ROLE, msg.sender);
-  }
+    // map used to store user amount that are staked user => tokenAddress => amount
+    mapping(address => mapping(address => uint256)) private _balances;
 
-  /// @notice add new ERC20 contract to whiteList
-  /// @dev add ERC20 contract address in whiteList set
-  function addWhiteList(address value) external checkOwner returns (bool) {
-    return _whitList.add(value);
-  }
+    // A mapping used to store the last block number at which a user's balance was updated.
+    mapping(address => mapping(address => uint256)) private _lastUpdateBlock; 
 
-  /// @notice remove ERC20 contract from whiteList
-  /// @dev remove ERC20 contract address in whiteList set
-  function removeWhiteList(address value) external checkOwner returns (bool) {
-    return _whitList.remove(value);
-  }
+    //A mapping used to store each user's total rewards
+    mapping(address => uint256) private _rewards; // user => total rewards
 
-  /// @notice owner start staking so that user can stake
-  /// @dev owner change state of start and end for user to stake
-  function startStack(uint256 _hours) external checkOwner {
-    start = block.timestamp;
-    end += start + _hours * 60 * 60;
-  }
+    /// @notice This event is emitted when user staked amount in staking .
+    /// @param user  The user address.
+    /// @param token token's contract address.
+    /// @param amount The amount.
+    event Staked(address indexed user, address indexed token, uint256 amount);
 
-  /// @notice user can stake its coins by this stake function
-  /// @dev this add user stake amount and contract token address and block number at staking time in stacker
-  function stake(uint256 _amount, address _ERC20) external checkStakeTime {
-    require(_whitList.contains(_ERC20), "token is not white list token");
-    balance[msg.sender] += _amount;
-    staker[msg.sender] = StakerDetail(block.number, _ERC20);
-    IERC20Upgradeable(_ERC20).transferFrom(msg.sender, address(this), _amount);
-  }
+    /// @notice This event is emitted when user withdrawal amount from staking.
+    /// @param user  The user address.
+    /// @param token token's contract address.
+    /// @param amount The amount.
+    event Withdrawn(address indexed user, address indexed token, uint256 amount);
 
-  /// @notice user can withdraw its staked token
-  /// @dev give msg.sender its staked token and update its reward
-  function withdrawStakToken() external {
-    require(balance[msg.sender] != 0, "have not staked");
-    address _ERC20 = staker[msg.sender].ERC20Contract;
-    IERC20Upgradeable(_ERC20).transfer(msg.sender, balance[msg.sender]);
-    uint256 rewardAmount;
-    if (block.timestamp <= end) {
-      rewardAmount = (block.number - staker[msg.sender].blockNumber) / 5;
-    } else {
-      rewardAmount = (updatedBlockNumber - staker[msg.sender].blockNumber) / 5;
+    /// @notice This event is emitted when user's reward paid to corresponding user.
+    /// @param user  The user address.
+    event RewardPaid(address indexed user);
+
+    /// @notice This event is emitted when user reward updated.
+    /// @param user  The user address.
+    event UpdateReward(address indexed user);
+
+    /// @dev Modifier to check if the current time is within the staking duration.
+    /// @dev Throws an error if the current time is outside of the staking duration.
+    modifier onlyWhileOpen() {
+        require(block.timestamp >= startTimestamp && block.timestamp <= endTimestamp, "Duration over");
+        _;
     }
-    reward[msg.sender] = rewardAmount;
-    balance[msg.sender] = 0;
-  }
 
-  /// @dev only owner can updatedBlockNumber when stake time has ended
-  function updateTimestamp() external checkOwner {
-    require(block.timestamp == end, "time is not equal to end");
-    updatedBlockNumber = block.number;
-  }
+    /**
+    * @dev Modifier to check if a token address is whitelisted for staking.
+    * @dev Throws an error if the token address is not whitelisted.
+    * @param _token The address of the token being staked.
+    */
+    modifier onlyWhitelistedToken(address _token) {
+        require(_whitelistedToken.contains(_token), "Token is not whitelisted");
+        _;
+    }
 
-  /// @notice reward amount of owner
-  /// @param _owner address of owner of reward
-  /// @return amount of reward owner have
-  function getRewardBalance(address _owner) external view returns (uint256) {
-    return reward[_owner];
-  }
+    /**
+    * @dev Initializes the contract.
+    * @param _startTimestamp The timestamp at which the staking period begins.
+    * @param _endTimestamp The timestamp at which the staking period ends.
+    * @param rewardToken The address of the reward token contract.
+     */
+    function initialize(
+        uint256 _startTimestamp,
+        uint256 _endTimestamp,
+        address rewardToken
+    ) external initializer {
+        require(_endTimestamp > _startTimestamp, "endTimestamp must be greater than startTimestamp");
+        require(address(rewardToken) != address(0) ,"Address must be non zero address");
+        __AccessControl_init();
+        __Ownable2Step_init();
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        startTimestamp = _startTimestamp;
+        endTimestamp = _endTimestamp;
+        rewardTokenContract = rewardToken;
+    }
 
-  /// @notice check _owner is valid to claim reward
-  /// @param _owner address of staker
-  /// @return bool
-  function check(address _owner) external view returns (bool) {
-    require(end != 0 && block.timestamp > end, "stake period has not ended");
-    require(
-      _whitList.contains(staker[_owner].ERC20Contract),
-      "token is not white list token"
-    );
-    return true;
-  }
+    /// @dev This function used to add white token into set by contract owner
+    /// @param _token address of token.
+    function addWhitelistToken(address _token)external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _whitelistedToken.add(_token);
+    }
 
-  function isWhitList(address value) external view returns (bool) {
-    return _whitList.contains(value);
-  }
+    /// @dev this function used to remove whitelisted token from set by contract owner
+    /// @param _token address of token that are being to be removed
+    function removeWhitelistToken(address _token) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _whitelistedToken.remove(_token);
+    }
+
+    /// @dev This function used for staking token of amount value
+    /// @param token address of token that being to be staked
+    /// @param amount the amount of token 
+    function stake(address token, uint256 amount)
+        external
+        onlyWhileOpen
+        onlyWhitelistedToken(token)
+    {   
+        require(amount > 0, "Amount must be greater than zero");
+        IERC20Upgradeable(token).transferFrom(msg.sender, address(this), amount);
+        _whitelistedUsers.add(msg.sender);
+        _balances[msg.sender][token] += amount;
+        //if block number already stored then it does not override
+         if(_lastUpdateBlock[msg.sender][token] == 0) {
+            _lastUpdateBlock[msg.sender][token] = block.number; 
+         }
+        emit Staked(msg.sender, token, amount); 
+    }
+
+    /// @dev this function withdraw given amount of token from staking pool
+    /// @param token address of token that user want to withdraw
+    /// @param amount amount of token 
+    function withdraw(address token, uint256 amount)
+        external
+        onlyWhitelistedToken(token) {
+        //checkpoint for checking sufficient balance
+        require(amount > 0, "amount must be greater than zero");
+        require(_balances[msg.sender][token] >= amount, "Insufficient balance");
+        _updateRewards(msg.sender, token);
+
+        //transfer token from staking pool to user
+        IERC20Upgradeable(token).transfer(msg.sender, amount);
+
+        //update balance of staking amount of corresponding user
+        _balances[msg.sender][token] -= amount;
+
+        //emit event after successful withdraw of tokens
+        emit Withdrawn(msg.sender, token, amount);
+    }
+
+    /// @dev this function used to get reward
+    function getReward() external {
+        uint256 reward = _rewards[msg.sender];
+        if (reward > 0) {
+            _rewards[msg.sender] = 0;
+
+            IERC20Upgradeable(rewardTokenContract).transferFrom(
+            msg.sender,
+            address(this),
+            reward
+        );
+           // Transfer reward tokens to user
+            require(
+                IERC20Upgradeable(rewardTokenContract).transfer(
+                    msg.sender,
+                    reward
+                ),
+                "Failed to transfer reward tokens"
+            );
+            emit RewardPaid(msg.sender);
+        }
+    }
+
+    /// @dev this function used to update block number at the end of timestamp
+    function blockNumberAtEndTimestamp() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(!flag && block.timestamp > endTimestamp, "either staking duration not completed or function already call");
+        blockAtEndTimestamp = block.number;
+        flag = true;
+    }
+
+    /// @dev This function retrieves the current balance of token that user stake.
+    /// @param user address of user
+    /// @param token address of token
+    /// @return The current value of balance of user.
+    function balanceOf(address user, address token) external view returns (uint256) {
+        return _balances[user][token];
+    }
+    /// @dev This function check given token is whitelisted or not
+    /// @param token address of token that to be checked
+    /// @return bool value either true or false, if whitelisted return true, otherwise false
+    function isWhitelistedToken(address token) external view returns (bool) {
+        return _whitelistedToken.contains(token);
+    }
+
+    /// @dev This function check given address is whitelisted or not
+    /// @param user address of user that to be checked
+    /// @return bool value either true or false, if whitelisted return true, otherwise false
+    function isWhitelistedUser(address user) external view returns (bool) {
+        return _whitelistedUsers.contains(user);
+    }
+
+    /// @dev This function gives the endTimestamp of staking duration
+    /// @return uint256 value
+    function getEndTimestamp() external view returns (uint256) {
+        return endTimestamp;
+    }
+
+    /// @dev this function used to update reward of user 
+    /// @param user address of user
+    /// @param token address of token
+    function _updateRewards(address user, address token) private {
+        uint256 reward;
+        if(block.timestamp > endTimestamp) {
+            reward = ((blockAtEndTimestamp - _lastUpdateBlock[user][token]) / 5) * REWARD;
+        }else {
+            reward = ((block.number - _lastUpdateBlock[user][token]) / 5) * REWARD;
+        }
+        _rewards[user] += reward;
+        if(block.timestamp >= startTimestamp && block.timestamp <= endTimestamp) {
+            _lastUpdateBlock[user][token] = block.number;
+        }  
+        emit UpdateReward(user);
+    }
 }
